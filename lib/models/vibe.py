@@ -19,20 +19,26 @@ class TemporalEncoder(nn.Module):
     ):
         super(TemporalEncoder, self).__init__()
 
-        self.gru = nn.GRU(
+        self.gru = nn.LSTM(
             input_size=2048,
             hidden_size=hidden_size,
             bidirectional=bidirectional,
-            num_layers=n_layers
-        )
+            num_layers=n_layers,
+            batch_first=True
+        )   
 
-        self.linear = None
-        if bidirectional:
-            self.linear = nn.Linear(hidden_size*2, 2048)
-        elif add_linear:
-            self.linear = nn.Linear(hidden_size, 2048)
+        # self.linear = None
+        # if bidirectional:
+        #     self.linear = nn.Linear(hidden_size*2, 2048)
+        # elif add_linear:
+        #     self.linear = nn.Linear(hidden_size, 2048)
+        # self.use_residual = use_residual
+
+        self.linear = nn.Identity()
+        if add_linear:
+            self.linear = nn.Linear(hidden_size * (2 if bidirectional else 1), 2048)
         self.use_residual = use_residual
-
+                
     def forward(self, x):
         n,t,f = x.shape
         x = x.permute(1,0,2) # NTF -> TNF

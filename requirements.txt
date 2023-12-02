@@ -12,7 +12,7 @@ pillow
 trimesh
 pyrender
 progress
-filterp
+filterpy
 matplotlib
 tensorflow
 tensorboard

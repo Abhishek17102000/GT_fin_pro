@@ -21,20 +21,40 @@ class SelfAttention(nn.Module):
         else:
             activation = nn.Tanh()
 
-        modules = []
-        for i in range(layers - 1):
-            modules.append(nn.Linear(attention_size, attention_size))
-            modules.append(activation)
-            modules.append(nn.Dropout(dropout))
+        # modules = []
+        # for i in range(layers - 1):
+        #     modules.append(nn.Linear(attention_size, attention_size))
+        #     modules.append(activation)
+        #     modules.append(nn.Dropout(dropout))
 
-        # last attention layer must output 1
-        modules.append(nn.Linear(attention_size, 1))
-        modules.append(activation)
-        modules.append(nn.Dropout(dropout))
+        # # last attention layer must output 1
+        # modules.append(nn.Linear(attention_size, 1))
+        # modules.append(activation)
+        # modules.append(nn.Dropout(dropout))
 
-        self.attention = nn.Sequential(*modules)
-        self.attention.apply(init_weights) 
-        self.softmax = nn.Softmax(dim=-1)
+        # self.attention = nn.Sequential(*modules)
+        # self.attention.apply(init_weights) 
+        # self.softmax = nn.Softmax(dim=-1)
+
+        # Define attention layers using nn.ModuleList
+        self.attention_layers = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(attention_size, attention_size),
+                activation,
+                nn.Dropout(dropout)
+            ) for _ in range(layers - 1)
+        ])
+
+        # Last attention layer
+        self.attention_layers.append(
+            nn.Sequential(
+                nn.Linear(attention_size, 1),
+                nn.Dropout(dropout)
+            )
+        )
+
+        self.attention.apply(init_weights)
+        self.softmax = nn.Softmax(dim=-1)        
 
 
     def forward(self, inputs):
@@ -46,9 +66,14 @@ class SelfAttention(nn.Module):
 
         # inputs is a 3D Tensor: batch, len, hidden_size
         # scores is a 2D Tensor: batch, len
-        scores = self.attention(inputs).squeeze()
-        scores = self.softmax(scores)
+        # scores = self.attention(inputs).squeeze()
+        # scores = self.softmax(scores)
 
+        for layer in self.attention_layers:
+            inputs = layer(inputs)
+
+        # Perform softmax on the attention scores
+        scores = self.softmax(inputs.squeeze())        
         ##################################################################
         # Step 2 - Weighted sum of hidden states, by the attention scores
         ##################################################################

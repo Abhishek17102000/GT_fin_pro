@@ -26,7 +26,8 @@ class MotionDiscriminator(nn.Module):
         self.attention_layers = attention_layers
         self.attention_dropout = attention_dropout
 
-        self.gru = nn.GRU(self.input_size, self.rnn_size, num_layers=num_layers)
+        # self.gru = nn.GRU(self.input_size, self.rnn_size, num_layers=num_layers, dropout=0.2)
+        self.gru = nn.LSTM(self.input_size, self.rnn_size, num_layers=num_layers, batch_first=True, dropout=0.2)
 
         linear_size = self.rnn_size if not feature_pool == "concat" else self.rnn_size * 2
 

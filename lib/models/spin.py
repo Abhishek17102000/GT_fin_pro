@@ -213,12 +213,15 @@ class Regressor(nn.Module):
         npose = 24 * 6
 
         self.fc1 = nn.Linear(512 * 4 + npose + 13, 1024)
+        self.bn1 = nn.BatchNorm1d(1024)
         self.drop1 = nn.Dropout()
         self.fc2 = nn.Linear(1024, 1024)
         self.drop2 = nn.Dropout()
         self.decpose = nn.Linear(1024, npose)
         self.decshape = nn.Linear(1024, 10)
         self.deccam = nn.Linear(1024, 3)
+        nn.init.xavier_uniform_(self.fc1.weight, gain=nn.init.calculate_gain('relu'))
+        nn.init.xavier_uniform_(self.fc2.weight, gain=nn.init.calculate_gain('relu'))
         nn.init.xavier_uniform_(self.decpose.weight, gain=0.01)
         nn.init.xavier_uniform_(self.decshape.weight, gain=0.01)
         nn.init.xavier_uniform_(self.deccam.weight, gain=0.01)
@@ -254,9 +257,9 @@ class Regressor(nn.Module):
         pred_cam = init_cam
         for i in range(n_iter):
             xc = torch.cat([x, pred_pose, pred_shape, pred_cam], 1)
-            xc = self.fc1(xc)
+            xc = nn.functional.relu(self.bn1(self.fc1(xc)))
             xc = self.drop1(xc)
-            xc = self.fc2(xc)
+            xc = nn.functional.relu(self.bn1(self.fc2(xc)))
             xc = self.drop2(xc)
             pred_pose = self.decpose(xc) + pred_pose
             pred_shape = self.decshape(xc) + pred_shape
