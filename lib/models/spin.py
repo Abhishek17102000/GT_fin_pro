@@ -7,6 +7,7 @@ import numpy as np
 import os.path as osp
 import torch.nn as nn
 import torchvision.models.resnet as resnet
+from efficientnet_pytorch import EfficientNet
 
 from lib.core.config import VIBE_DATA_DIR
 from lib.utils.geometry import rotation_matrix_to_angle_axis, rot6d_to_rotmat
@@ -301,8 +302,10 @@ def hmr(smpl_mean_params=SMPL_MEAN_PARAMS, pretrained=True, **kwargs):
     """
     model = HMR(Bottleneck, [3, 4, 6, 3], smpl_mean_params, **kwargs)
     if pretrained:
-        resnet_imagenet = resnet.resnet50(pretrained=True)
-        model.load_state_dict(resnet_imagenet.state_dict(), strict=False)
+        # resnet_imagenet = resnet.resnet50(pretrained=True)
+        # model.load_state_dict(resnet_imagenet.state_dict(), strict=False)
+        efficientnet_imagenet = EfficientNet.from_pretrained('efficientnet-b4')
+        model.load_state_dict(efficientnet_imagenet.state_dict(), strict=False)        
     return model
 
 

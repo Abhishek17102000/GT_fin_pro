@@ -1,4 +1,6 @@
 import os
+os.environ['PYOPENGL_PLATFORM'] = 'egl'
+
 import cv2
 import time
 import torch
@@ -29,70 +31,100 @@ from lib.utils.demo_utils import (
     download_ckpt,
 )
 
-MIN_FRAMES = 25
+MIN_NUM_FRAMES = 25
+
 
 def main(args):
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
-    vid_url = args.vid_url
+    video_file = args.vid_file
 
-    # Download YouTube video if provided
-    if vid_url.startswith('https://www.youtube.com'):
-        vid_url = download_youtube_clip(vid_url, '/tmp')
-        if vid_url is None:
-            exit('Invalid YouTube url!')
+    # ========= [Optional] download the youtube video ========= #
+    if video_file.startswith('https://www.youtube.com'):
+        print(f'Donwloading YouTube video \"{video_file}\"')
+        video_file = download_youtube_clip(video_file, '/tmp')
 
-    if not os.path.isfile(vid_url):
-        exit(f'Input video \"{vid_url}\" does not exist!')
+        if video_file is None:
+            exit('Youtube url is not valid!')
 
-    output_path = os.path.join(args.output_folder, os.path.basename(vid_url).replace('.mp4', ''))
+        print(f'YouTube Video has been downloaded to {video_file}...')
+
+    if not os.path.isfile(video_file):
+        exit(f'Input video \"{video_file}\" does not exist!')
+
+    output_path = os.path.join(args.output_folder, os.path.basename(video_file).replace('.mp4', ''))
     os.makedirs(output_path, exist_ok=True)
 
-    img_folder, num_frames, img_shape = video_to_images(vid_url, return_info=True)
+    image_folder, num_frames, img_shape = video_to_images(video_file, return_info=True)
+
+    print(f'Input video number of frames {num_frames}')
     orig_height, orig_width = img_shape[:2]
 
-    # Run tracking
-    bbox_scale = 1.1
-    if args.tracking == 'pose':
-        tracking_results = run_posetracker(vid_url, staf_folder=args.staf_dir, display=args.display)
-    else:
-        mot = MPT(device=device, batch_size=args.tracker_batch_size, display=args.display,
-                  detector_type=args.detector, output_format='dict', yolo_img_size=args.yolo_size)
-        tracking_results = mot(img_folder)
+    total_time = time.time()
 
-    # Remove tracklets with fewer frames than MIN_FRAMES
+    # ========= Run tracking ========= #
+    bbox_scale = 1.1
+    if args.tracking_method == 'pose':
+        if not os.path.isabs(video_file):
+            video_file = os.path.join(os.getcwd(), video_file)
+        tracking_results = run_posetracker(video_file, staf_folder=args.staf_dir, display=args.display)
+    else:
+        # run multi object tracker
+        mot = MPT(
+            device=device,
+            batch_size=args.tracker_batch_size,
+            display=args.display,
+            detector_type=args.detector,
+            output_format='dict',
+            yolo_img_size=args.yolo_img_size,
+        )
+        tracking_results = mot(image_folder)
+
+    # remove tracklets if num_frames is less than MIN_NUM_FRAMES
     for person_id in list(tracking_results.keys()):
-        if tracking_results[person_id]['frames'].shape[0] < MIN_FRAMES:
+        if tracking_results[person_id]['frames'].shape[0] < MIN_NUM_FRAMES:
             del tracking_results[person_id]
 
-    # VIBE model
-    vibe_model = VIBE_Demo(seqlen=16, n_layers=2, hidden_size=1024, add_linear=True, use_residual=True).to(device)
+    # ========= Define VIBE model ========= #
+    model = VIBE_Demo(
+        seqlen=16,
+        n_layers=2,
+        hidden_size=1024,
+        add_linear=True,
+        use_residual=True,
+    ).to(device)
 
-    # Load pretrained weights
-    pretrained_ckpt = download_ckpt(use_3dpw=False)
-    ckpt = torch.load(pretrained_ckpt)
-    print(f'Pretrained model performance on 3DPW: {ckpt["performance"]}')
+    # ========= Load pretrained weights ========= #
+    pretrained_file = download_ckpt(use_3dpw=False)
+    ckpt = torch.load(pretrained_file)
+    print(f'Performance of pretrained model on 3DPW: {ckpt["performance"]}')
     ckpt = ckpt['gen_state_dict']
-    vibe_model.load_state_dict(ckpt, strict=False)
-    vibe_model.eval()
-    print(f'Loaded pretrained weights from \"{pretrained_ckpt}\"')
+    model.load_state_dict(ckpt, strict=False)
+    model.eval()
+    print(f'Loaded pretrained weights from \"{pretrained_file}\"')
 
-    # Run VIBE on each person
+    # ========= Run VIBE on each person ========= #
     print(f'Running VIBE on each tracklet...')
     vibe_time = time.time()
     vibe_results = {}
-
     for person_id in tqdm(list(tracking_results.keys())):
         bboxes = joints2d = None
 
-        if args.tracking == 'bbox':
+        if args.tracking_method == 'bbox':
             bboxes = tracking_results[person_id]['bbox']
-        elif args.tracking == 'pose':
+        elif args.tracking_method == 'pose':
             joints2d = tracking_results[person_id]['joints2d']
 
         frames = tracking_results[person_id]['frames']
 
-        dataset = Inference(image_folder=img_folder, frames=frames, bboxes=bboxes, joints2d=joints2d, scale=bbox_scale)
+        dataset = Inference(
+            image_folder=image_folder,
+            frames=frames,
+            bboxes=bboxes,
+            joints2d=joints2d,
+            scale=bbox_scale,
+        )
+
         bboxes = dataset.bboxes
         frames = dataset.frames
         has_keypoints = True if joints2d is not None else False
@@ -100,6 +132,7 @@ def main(args):
         dataloader = DataLoader(dataset, batch_size=args.vibe_batch_size, num_workers=16)
 
         with torch.no_grad():
+
             pred_cam, pred_verts, pred_pose, pred_betas, pred_joints3d, smpl_joints2d, norm_joints2d = [], [], [], [], [], [], []
 
             for batch in dataloader:
@@ -111,7 +144,7 @@ def main(args):
                 batch = batch.to(device)
 
                 batch_size, seqlen = batch.shape[:2]
-                output = vibe_model(batch)[-1]
+                output = model(batch)[-1]
 
                 pred_cam.append(output['theta'][:, :, :3].reshape(batch_size * seqlen, -1))
                 pred_verts.append(output['verts'].reshape(batch_size * seqlen, -1, 3))
@@ -119,6 +152,7 @@ def main(args):
                 pred_betas.append(output['theta'][:, :,75:].reshape(batch_size * seqlen, -1))
                 pred_joints3d.append(output['kp_3d'].reshape(batch_size * seqlen, -1, 3))
                 smpl_joints2d.append(output['kp_2d'].reshape(batch_size * seqlen, -1, 2))
+
 
             pred_cam = torch.cat(pred_cam, dim=0)
             pred_verts = torch.cat(pred_verts, dim=0)
@@ -128,11 +162,13 @@ def main(args):
             smpl_joints2d = torch.cat(smpl_joints2d, dim=0)
             del batch
 
-        if args.run_smplify and args.tracking == 'pose':
+        # ========= [Optional] run Temporal SMPLify to refine the results ========= #
+        if args.run_smplify and args.tracking_method == 'pose':
             norm_joints2d = np.concatenate(norm_joints2d, axis=0)
             norm_joints2d = convert_kps(norm_joints2d, src='staf', dst='spin')
             norm_joints2d = torch.from_numpy(norm_joints2d).float().to(device)
 
+            # Run Temporal SMPLify
             update, new_opt_vertices, new_opt_cam, new_opt_pose, new_opt_betas, \
             new_opt_joints3d, new_opt_joint_loss, opt_joint_loss = smplify_runner(
                 pred_rotmat=pred_pose,
@@ -144,6 +180,8 @@ def main(args):
                 pose2aa=False,
             )
 
+            # update the parameters after refinement
+            print(f'Update ratio after Temporal SMPLify: {update.sum()} / {norm_joints2d.shape[0]}')
             pred_verts = pred_verts.cpu()
             pred_cam = pred_cam.cpu()
             pred_pose = pred_pose.cpu()
@@ -155,6 +193,11 @@ def main(args):
             pred_betas[update] = new_opt_betas[update]
             pred_joints3d[update] = new_opt_joints3d[update]
 
+        elif args.run_smplify and args.tracking_method == 'bbox':
+            print('[WARNING] You need to enable pose tracking to run Temporal SMPLify algorithm!')
+            print('[WARNING] Continuing without running Temporal SMPLify!..')
+
+        # ========= Save results to a pickle file ========= #
         pred_cam = pred_cam.cpu().numpy()
         pred_verts = pred_verts.cpu().numpy()
         pred_pose = pred_pose.cpu().numpy()
@@ -162,10 +205,11 @@ def main(args):
         pred_joints3d = pred_joints3d.cpu().numpy()
         smpl_joints2d = smpl_joints2d.cpu().numpy()
 
+        # Runs 1 Euro Filter to smooth out the results
         if args.smooth:
-            min_cutoff = args.smooth_min_cutoff
-            beta = args.smooth_beta
-            print(f'Smoothing person {person_id}, min_cutoff: {min_cutoff}, beta: {beta}')
+            min_cutoff = args.smooth_min_cutoff # 0.004
+            beta = args.smooth_beta # 1.5
+            print(f'Running smoothing on person {person_id}, min_cutoff: {min_cutoff}, beta: {beta}')
             pred_verts, pred_pose, pred_joints3d = smooth_pose(pred_pose, pred_betas,
                                                                min_cutoff=min_cutoff, beta=beta)
 
@@ -197,33 +241,36 @@ def main(args):
 
         vibe_results[person_id] = output_dict
 
-    del vibe_model
+    del model
 
     end = time.time()
     fps = num_frames / (end - vibe_time)
 
     print(f'VIBE FPS: {fps:.2f}')
-    total_time = time.time() - vibe_time
+    total_time = time.time() - total_time
     print(f'Total time spent: {total_time:.2f} seconds (including model loading time).')
     print(f'Total FPS (including model loading time): {num_frames / total_time:.2f}.')
 
     print(f'Saving output results to \"{os.path.join(output_path, "vibe_output.pkl")}\".')
+
     joblib.dump(vibe_results, os.path.join(output_path, "vibe_output.pkl"))
 
     if not args.no_render:
+        # ========= Render results as a single video ========= #
         renderer = Renderer(resolution=(orig_width, orig_height), orig_img=True, wireframe=args.wireframe)
 
-        output_img_folder = f'{img_folder}_output'
+        output_img_folder = f'{image_folder}_output'
         os.makedirs(output_img_folder, exist_ok=True)
 
         print(f'Rendering output video, writing frames to {output_img_folder}')
 
+        # prepare results for rendering
         frame_results = prepare_rendering_results(vibe_results, num_frames)
         mesh_color = {k: colorsys.hsv_to_rgb(np.random.rand(), 0.5, 1.0) for k in vibe_results.keys()}
 
         image_file_names = sorted([
-            os.path.join(img_folder, x)
-            for x in os.listdir(img_folder)
+            os.path.join(image_folder, x)
+            for x in os.listdir(image_folder)
             if x.endswith('.png') or x.endswith('.jpg')
         ])
 
@@ -278,14 +325,15 @@ def main(args):
         if args.display:
             cv2.destroyAllWindows()
 
-        vid_name = os.path.basename(vid_url)
+        # ========= Save rendered video ========= #
+        vid_name = os.path.basename(video_file)
         save_name = f'{vid_name.replace(".mp4", "")}_vibe_result.mp4'
         save_name = os.path.join(output_path, save_name)
         print(f'Saving result video to {save_name}')
         images_to_video(img_folder=output_img_folder, output_vid_file=save_name)
         shutil.rmtree(output_img_folder)
 
-    shutil.rmtree(img_folder)
+    shutil.rmtree(image_folder)
     print('================= END =================')
 
 
@@ -339,11 +387,11 @@ if __name__ == '__main__':
 
     parser.add_argument('--smooth_min_cutoff', type=float, default=0.004,
                         help='one euro filter min cutoff. '
-                            'Decreasing the minimum cutoff frequency decreases slow speed jitter')
+                             'Decreasing the minimum cutoff frequency decreases slow speed jitter')
 
     parser.add_argument('--smooth_beta', type=float, default=0.7,
                         help='one euro filter beta. '
-                            'Increasing the speed coefficient(beta) decreases speed lag.')
+                             'Increasing the speed coefficient(beta) decreases speed lag.')
 
     args = parser.parse_args()
 
