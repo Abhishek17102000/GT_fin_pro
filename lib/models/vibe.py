@@ -19,7 +19,7 @@ class TemporalEncoder(nn.Module):
     ):
         super(TemporalEncoder, self).__init__()
 
-        self.gru = nn.LSTM(
+        self.gru = nn.GRU(
             input_size=2048,
             hidden_size=hidden_size,
             bidirectional=bidirectional,

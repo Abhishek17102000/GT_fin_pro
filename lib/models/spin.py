@@ -7,6 +7,7 @@ import numpy as np
 import os.path as osp
 import torch.nn as nn
 import torchvision.models.resnet as resnet
+from efficientnet_pytorch import EfficientNet
 
 from lib.core.config import VIBE_DATA_DIR
 from lib.utils.geometry import rotation_matrix_to_angle_axis, rot6d_to_rotmat
@@ -64,9 +65,11 @@ class HMR(nn.Module):
         self.inplanes = 64
         super(HMR, self).__init__()
         npose = 24 * 6
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
-                               bias=False)
-        self.bn1 = nn.BatchNorm2d(64)
+        # self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
+        #                        bias=False)
+        # self.bn1 = nn.BatchNorm2d(64)
+        self.conv1 = EfficientNet.encoder('efficientnet-b0')(include_top=False)
+        self.bn1 = nn.BatchNorm2d(1280)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, layers[0])
@@ -74,7 +77,8 @@ class HMR(nn.Module):
         self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
         self.avgpool = nn.AvgPool2d(7, stride=1)
-        self.fc1 = nn.Linear(512 * block.expansion + npose + 13, 1024)
+        # self.fc1 = nn.Linear(512 * block.expansion + npose + 13, 1024)
+        self.fc1 = nn.Linear(1280 + npose + 13, 1024)
         self.drop1 = nn.Dropout()
         self.fc2 = nn.Linear(1024, 1024)
         self.drop2 = nn.Dropout()
@@ -257,9 +261,11 @@ class Regressor(nn.Module):
         pred_cam = init_cam
         for i in range(n_iter):
             xc = torch.cat([x, pred_pose, pred_shape, pred_cam], 1)
-            xc = nn.functional.relu(self.bn1(self.fc1(xc)))
+            xc = self.fc1(xc)
+            # xc = nn.functional.relu(self.bn1(self.fc1(xc)))
             xc = self.drop1(xc)
-            xc = nn.functional.relu(self.bn1(self.fc2(xc)))
+            xc = self.fc2(xc)
+            # xc = nn.functional.relu(self.bn1(self.fc2(xc)))
             xc = self.drop2(xc)
             pred_pose = self.decpose(xc) + pred_pose
             pred_shape = self.decshape(xc) + pred_shape
@@ -304,8 +310,10 @@ def hmr(smpl_mean_params=SMPL_MEAN_PARAMS, pretrained=True, **kwargs):
     """
     model = HMR(Bottleneck, [3, 4, 6, 3], smpl_mean_params, **kwargs)
     if pretrained:
-        resnet_imagenet = resnet.resnet50(pretrained=True)
-        model.load_state_dict(resnet_imagenet.state_dict(), strict=False)
+        # resnet_imagenet = resnet.resnet50(pretrained=True)
+        # model.load_state_dict(resnet_imagenet.state_dict(), strict=False)
+        efficientnet_imagenet = EfficientNet.from_pretrained('efficientnet-b0')
+        model.load_state_dict(efficientnet_imagenet.state_dict(), strict=False)        
     return model
 
 
