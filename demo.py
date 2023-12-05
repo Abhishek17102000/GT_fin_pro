@@ -19,7 +19,6 @@ from lib.dataset.inference import Inference
 
 from lib.utils.demo_utils import (
     download_youtube_clip,
-    smplify_runner,
     convert_crop_coords_to_orig_img,
     convert_crop_cam_to_orig_img,
     prepare_rendering_results,
@@ -101,9 +100,7 @@ def main(args):
     for person_id in tqdm(list(tracking_results.keys())):
         bboxes = joints2d = None
 
-        if args.tracking_method == 'bbox':
-            bboxes = tracking_results[person_id]['bbox']
-
+        bboxes = tracking_results[person_id]['bbox']
         frames = tracking_results[person_id]['frames']
 
         dataset = Inference(
