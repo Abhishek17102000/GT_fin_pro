@@ -16,9 +16,6 @@ from torch.utils.data import DataLoader
 from lib.models.vibe import VIBE_Demo
 from lib.utils.renderer import Renderer
 from lib.dataset.inference import Inference
-from lib.utils.smooth_pose import smooth_pose
-from lib.data_utils.kp_utils import convert_kps
-from lib.utils.pose_tracker import run_posetracker
 
 from lib.utils.demo_utils import (
     download_youtube_clip,
@@ -64,21 +61,15 @@ def main(args):
 
     # ========= Run tracking ========= #
     bbox_scale = 1.1
-    if args.tracking_method == 'pose':
-        if not os.path.isabs(video_file):
-            video_file = os.path.join(os.getcwd(), video_file)
-        tracking_results = run_posetracker(video_file, staf_folder=args.staf_dir, display=args.display)
-    else:
-        # run multi object tracker
-        mot = MPT(
-            device=device,
-            batch_size=args.tracker_batch_size,
-            display=args.display,
-            detector_type=args.detector,
-            output_format='dict',
-            yolo_img_size=args.yolo_img_size,
-        )
-        tracking_results = mot(image_folder)
+    mot = MPT(
+        device=device,
+        batch_size=args.tracker_batch_size,
+        display=args.display,
+        detector_type=args.detector,
+        output_format='dict',
+        yolo_img_size=args.yolo_img_size,
+    )
+    tracking_results = mot(image_folder)
 
     # remove tracklets if num_frames is less than MIN_NUM_FRAMES
     for person_id in list(tracking_results.keys()):
@@ -112,8 +103,6 @@ def main(args):
 
         if args.tracking_method == 'bbox':
             bboxes = tracking_results[person_id]['bbox']
-        elif args.tracking_method == 'pose':
-            joints2d = tracking_results[person_id]['joints2d']
 
         frames = tracking_results[person_id]['frames']
 
@@ -162,41 +151,6 @@ def main(args):
             smpl_joints2d = torch.cat(smpl_joints2d, dim=0)
             del batch
 
-        # ========= [Optional] run Temporal SMPLify to refine the results ========= #
-        if args.run_smplify and args.tracking_method == 'pose':
-            norm_joints2d = np.concatenate(norm_joints2d, axis=0)
-            norm_joints2d = convert_kps(norm_joints2d, src='staf', dst='spin')
-            norm_joints2d = torch.from_numpy(norm_joints2d).float().to(device)
-
-            # Run Temporal SMPLify
-            update, new_opt_vertices, new_opt_cam, new_opt_pose, new_opt_betas, \
-            new_opt_joints3d, new_opt_joint_loss, opt_joint_loss = smplify_runner(
-                pred_rotmat=pred_pose,
-                pred_betas=pred_betas,
-                pred_cam=pred_cam,
-                j2d=norm_joints2d,
-                device=device,
-                batch_size=norm_joints2d.shape[0],
-                pose2aa=False,
-            )
-
-            # update the parameters after refinement
-            print(f'Update ratio after Temporal SMPLify: {update.sum()} / {norm_joints2d.shape[0]}')
-            pred_verts = pred_verts.cpu()
-            pred_cam = pred_cam.cpu()
-            pred_pose = pred_pose.cpu()
-            pred_betas = pred_betas.cpu()
-            pred_joints3d = pred_joints3d.cpu()
-            pred_verts[update] = new_opt_vertices[update]
-            pred_cam[update] = new_opt_cam[update]
-            pred_pose[update] = new_opt_pose[update]
-            pred_betas[update] = new_opt_betas[update]
-            pred_joints3d[update] = new_opt_joints3d[update]
-
-        elif args.run_smplify and args.tracking_method == 'bbox':
-            print('[WARNING] You need to enable pose tracking to run Temporal SMPLify algorithm!')
-            print('[WARNING] Continuing without running Temporal SMPLify!..')
-
         # ========= Save results to a pickle file ========= #
         pred_cam = pred_cam.cpu().numpy()
         pred_verts = pred_verts.cpu().numpy()
@@ -204,14 +158,6 @@ def main(args):
         pred_betas = pred_betas.cpu().numpy()
         pred_joints3d = pred_joints3d.cpu().numpy()
         smpl_joints2d = smpl_joints2d.cpu().numpy()
-
-        # Runs 1 Euro Filter to smooth out the results
-        if args.smooth:
-            min_cutoff = args.smooth_min_cutoff # 0.004
-            beta = args.smooth_beta # 1.5
-            print(f'Running smoothing on person {person_id}, min_cutoff: {min_cutoff}, beta: {beta}')
-            pred_verts, pred_pose, pred_joints3d = smooth_pose(pred_pose, pred_betas,
-                                                               min_cutoff=min_cutoff, beta=beta)
 
         orig_cam = convert_crop_cam_to_orig_img(
             cam=pred_cam,
@@ -289,11 +235,6 @@ def main(args):
 
                 mesh_filename = None
 
-                if args.save_obj:
-                    mesh_folder = os.path.join(output_path, 'meshes', f'{person_id:04d}')
-                    os.makedirs(mesh_folder, exist_ok=True)
-                    mesh_filename = os.path.join(mesh_folder, f'{frame_idx:06d}.obj')
-
                 img = renderer.render(
                     img,
                     frame_verts,
@@ -346,9 +287,6 @@ if __name__ == '__main__':
     parser.add_argument('--output_folder', type=str,
                         help='output folder to write results')
 
-    parser.add_argument('--tracking_method', type=str, default='bbox', choices=['bbox', 'pose'],
-                        help='tracking method to calculate the tracklet of a subject from the input video')
-
     parser.add_argument('--detector', type=str, default='yolo', choices=['yolo', 'maskrcnn'],
                         help='object detector to be used for bbox tracking')
 
@@ -358,17 +296,11 @@ if __name__ == '__main__':
     parser.add_argument('--tracker_batch_size', type=int, default=12,
                         help='batch size of object detector used for bbox tracking')
 
-    parser.add_argument('--staf_dir', type=str, default='/home/mkocabas/developments/openposetrack',
-                        help='path to directory STAF pose tracking method installed.')
-
     parser.add_argument('--vibe_batch_size', type=int, default=450,
                         help='batch size of VIBE')
 
     parser.add_argument('--display', action='store_true',
                         help='visualize the results of each step during demo')
-
-    parser.add_argument('--run_smplify', action='store_true',
-                        help='run smplify for refining the results, you need pose tracking to enable it')
 
     parser.add_argument('--no_render', action='store_true',
                         help='disable final rendering of output video.')
@@ -378,20 +310,6 @@ if __name__ == '__main__':
 
     parser.add_argument('--sideview', action='store_true',
                         help='render meshes from alternate viewpoint.')
-
-    parser.add_argument('--save_obj', action='store_true',
-                        help='save results as .obj files.')
-
-    parser.add_argument('--smooth', action='store_true',
-                        help='smooth the results to prevent jitter')
-
-    parser.add_argument('--smooth_min_cutoff', type=float, default=0.004,
-                        help='one euro filter min cutoff. '
-                             'Decreasing the minimum cutoff frequency decreases slow speed jitter')
-
-    parser.add_argument('--smooth_beta', type=float, default=0.7,
-                        help='one euro filter beta. '
-                             'Increasing the speed coefficient(beta) decreases speed lag.')
 
     args = parser.parse_args()
 
